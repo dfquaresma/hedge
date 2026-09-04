@@ -1,0 +1,23 @@
+{
+  "alb_sample": {
+    "tracePath": "../traces/alb/sample-trace.csv",
+    "outputPath": "../sim_results/lb_model/alb_sample/",
+    "forwardLatency": 0,
+    "coldStartDuration": 0,
+    "minGroupSize": 1,
+    "columns": {
+      "app": "instance_id",
+      "func": "request_type",
+      "startTimestamp": "request_creation_time",
+      "duration": "target_processing_time"
+    },
+    "resourceProvisioner": {
+      "tailLatencyProb": ["p95", "p99"],
+      "idletime": [-1, 0, 900],
+      "technique": [
+        "baseline",
+        "hedged_request"
+      ]
+    }
+  }
+}
