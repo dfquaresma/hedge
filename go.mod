@@ -7,6 +7,7 @@ toolchain go1.24.10
 replace github.com/dfquaresma/hedge => ./
 
 require (
+	github.com/agoussia/godes v0.0.0-20250214103310-60888010ad9d
 	github.com/dfquaresma/hedge v0.0.0-00010101000000-000000000000
 	github.com/spf13/viper v1.21.0
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6
