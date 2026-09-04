@@ -13,6 +13,7 @@
     },
     "resourceProvisioner": {
       "tailLatencyProb": ["p95", "p99"],
+      "thresholdScope": ["per_group", "global"],
       "idletime": [-1, 0, 900],
       "technique": [
         "baseline",
