@@ -63,8 +63,7 @@ func expandRuns(sc SimConfig) []runSpec {
 func Sim(sc SimConfig) {
 	start := time.Now()
 
-	records := io.ReadCSV(sc.TracePath)
-	trace, err := model.ParseTrace(records, sc.Columns, sc.MinGroupSize)
+	trace, err := model.ParseTrace(sc.TracePath, sc.Columns, sc.MinGroupSize)
 	if err != nil {
 		panic(err)
 	}
