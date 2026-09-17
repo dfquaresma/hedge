@@ -21,3 +21,10 @@ To run the Latency Model:
 cd /latency_model/
 go run main.go
 ```
+
+To run the LB Model (discrete-event replayer for AWS ALB/ELB traces — see
+`lb_model/README.md`):
+```bash
+cd /lb_model/
+go run .
+```

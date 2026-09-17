@@ -6,6 +6,12 @@ import (
 )
 
 func ReadInput(tracePath string) [][]string {
+	return ReadCSV(tracePath)[1:]
+}
+
+// ReadCSV reads a CSV file keeping the header row, for callers that resolve
+// columns by name.
+func ReadCSV(tracePath string) [][]string {
 	input, err := os.Open(tracePath)
 	if err != nil {
 		panic(err)
@@ -17,5 +23,5 @@ func ReadInput(tracePath string) [][]string {
 	if err != nil {
 		panic(err)
 	}
-	return rows[1:]
+	return rows
 }
