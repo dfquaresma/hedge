@@ -7,14 +7,26 @@ import (
 	"time"
 )
 
+// Threshold scopes: which latency distribution defines an invocation's
+// tail-latency threshold (and therefore the hedging delay).
+const (
+	// ScopePerGroup uses the invocation's own app+func group percentiles —
+	// a hedging policy aware of trace heterogeneity.
+	ScopePerGroup = "per_group"
+	// ScopeGlobal uses whole-trace percentiles — a policy blind to
+	// per-tenant differences, hedging every request by the same threshold.
+	ScopeGlobal = "global"
+)
+
 // Trace is a parsed and enriched load-balancer trace. It is built once and
 // reused across simulation runs; each run derives a fresh Dataset from it,
 // since invocations are mutated during simulation.
 type Trace struct {
-	rows        []parsedRow
-	percentiles map[string]percentile
-	groupSizes  map[string]int64
-	latencies   map[string][]float64
+	rows              []parsedRow
+	percentiles       map[string]percentile
+	globalPercentiles percentile
+	groupSizes        map[string]int64
+	latencies         map[string][]float64
 }
 
 type parsedRow struct {
@@ -110,16 +122,33 @@ func ParseTrace(records [][]string, cols ColumnMapping, minGroupSize int) (*Trac
 		rows[i].startTS -= base
 	}
 
+	// Whole-trace percentiles over the kept rows, so global and per-group
+	// thresholds describe the same replayed population.
+	allDurations := make([]float64, len(rows))
+	for i, row := range rows {
+		allDurations[i] = row.duration
+	}
+	sort.Float64s(allDurations)
+	globalPercentiles := percentile{
+		p50:   quantile(allDurations, 0.50),
+		p95:   quantile(allDurations, 0.95),
+		p99:   quantile(allDurations, 0.99),
+		p999:  quantile(allDurations, 0.999),
+		p9999: quantile(allDurations, 0.9999),
+		p100:  allDurations[len(allDurations)-1],
+	}
+
 	fmt.Printf(
 		"Trace parsed: %d invocations, %d app+func groups, %d rows dropped (invalid or below minGroupSize=%d)\n",
 		len(rows), len(groupSizes), len(records)-1-len(rows), minGroupSize,
 	)
 
 	return &Trace{
-		rows:        rows,
-		percentiles: percentiles,
-		groupSizes:  groupSizes,
-		latencies:   durationsByGroup,
+		rows:              rows,
+		percentiles:       percentiles,
+		globalPercentiles: globalPercentiles,
+		groupSizes:        groupSizes,
+		latencies:         durationsByGroup,
 	}, nil
 }
 
@@ -201,12 +230,22 @@ func quantile(sorted []float64, p float64) float64 {
 
 // NewDataSet materializes fresh invocations from a parsed trace for one
 // simulation run, tagging each with the tail-latency threshold implied by
-// tlProb (e.g. "p95", "p99").
-func NewDataSet(t *Trace, tlProb string) *Dataset {
+// tlProb (e.g. "p95", "p99") and scope (ScopePerGroup or ScopeGlobal).
+// Only the threshold changes with scope: copies dispatched by hedging always
+// resample from the invocation's own group distribution, since a tenant's
+// latency profile is a property of the workload, not of the policy.
+func NewDataSet(t *Trace, tlProb, scope string) *Dataset {
+	if scope != ScopePerGroup && scope != ScopeGlobal {
+		panic(fmt.Sprintf("unknown threshold scope %q (want %q or %q)", scope, ScopePerGroup, ScopeGlobal))
+	}
 	invocs := make([]Invocation, len(t.rows))
 	tailLatencyCount := 0
 	for id, row := range t.rows {
 		key := row.appID + row.funcID
+		pcts := t.percentiles[key]
+		if scope == ScopeGlobal {
+			pcts = t.globalPercentiles
+		}
 		entry := traceEntry{
 			appID:       row.appID,
 			funcID:      row.funcID,
@@ -214,7 +253,7 @@ func NewDataSet(t *Trace, tlProb string) *Dataset {
 			startTS:     row.startTS,
 			duration:    row.duration,
 			endTS:       row.startTS + row.duration,
-			tailLatency: newTailLatency(t.percentiles[key], tlProb),
+			tailLatency: newTailLatency(pcts, tlProb),
 		}
 		if entry.duration > entry.tailLatency.getTailLatencyThreshold() {
 			tailLatencyCount++

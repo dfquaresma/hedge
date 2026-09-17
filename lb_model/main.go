@@ -45,6 +45,7 @@ func getConfig(s string) runner.SimConfig {
 		},
 		Techniques:        viper.GetStringSlice(s + ".resourceProvisioner.technique"),
 		TailLatencyProbs:  viper.GetStringSlice(s + ".resourceProvisioner.tailLatencyProb"),
+		ThresholdScopes:   viper.GetStringSlice(s + ".resourceProvisioner.thresholdScope"),
 		Idletimes:         viper.GetIntSlice(s + ".resourceProvisioner.idletime"),
 		ForwardLatency:    viper.GetFloat64(s + ".forwardLatency"),
 		ColdStartDuration: viper.GetFloat64(s + ".coldStartDuration"),

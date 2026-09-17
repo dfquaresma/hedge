@@ -18,10 +18,44 @@ type SimConfig struct {
 	Columns           model.ColumnMapping
 	Techniques        []string
 	TailLatencyProbs  []string
+	ThresholdScopes   []string
 	Idletimes         []int
 	ForwardLatency    float64
 	ColdStartDuration float64
 	MinGroupSize      int
+}
+
+// runSpec is one point of the parameter grid.
+type runSpec struct {
+	prob      string
+	technique string
+	scope     string
+	idletime  float64
+}
+
+// expandRuns builds the parameter grid. The threshold scope only matters for
+// techniques that hedge, so baseline runs once per prob x idletime instead of
+// once per scope — its results are identical under any scope.
+func expandRuns(sc SimConfig) []runSpec {
+	scopes := sc.ThresholdScopes
+	if len(scopes) == 0 {
+		scopes = []string{model.ScopePerGroup}
+	}
+	specs := []runSpec{}
+	for _, p := range sc.TailLatencyProbs {
+		for _, i := range sc.Idletimes {
+			for _, t := range sc.Techniques {
+				if t == "baseline" {
+					specs = append(specs, runSpec{prob: p, technique: t, scope: model.ScopePerGroup, idletime: float64(i)})
+					continue
+				}
+				for _, s := range scopes {
+					specs = append(specs, runSpec{prob: p, technique: t, scope: s, idletime: float64(i)})
+				}
+			}
+		}
+	}
+	return specs
 }
 
 // Sim parses the trace once and replays it under every combination of
@@ -35,46 +69,44 @@ func Sim(sc SimConfig) {
 		panic(err)
 	}
 
-	count := 1
-	total := len(sc.Idletimes) * len(sc.TailLatencyProbs) * len(sc.Techniques)
+	specs := expandRuns(sc)
 	io.WriteOutputHeaderRow(sc.OutputPath, "replayer-stats.csv", []string{"elapsedTime", "currentTime", "id"})
-	for _, p := range sc.TailLatencyProbs {
-		for _, i := range sc.Idletimes {
-			for _, t := range sc.Techniques {
-				replayerOut := simulate(trace, sc, p, t, float64(i), count, total)
-				io.WriteOutputByRow(
-					sc.OutputPath,
-					"replayer-stats.csv",
-					[]string{
-						replayerOut[0],
-						time.Now().Format("2006-01-02 15:04:05"),
-						replayerOut[1],
-					},
-				)
-				count++
-			}
-		}
+	for count, spec := range specs {
+		replayerOut := simulate(trace, sc, spec, count+1, len(specs))
+		io.WriteOutputByRow(
+			sc.OutputPath,
+			"replayer-stats.csv",
+			[]string{
+				replayerOut[0],
+				time.Now().Format("2006-01-02 15:04:05"),
+				replayerOut[1],
+			},
+		)
 	}
 	fmt.Printf("Total Simulation Time: %s\n", time.Since(start))
 }
 
-func simulate(trace *model.Trace, sc SimConfig, prob, technique string, idletime float64, count, total int) []string {
+func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) []string {
 	cfg := model.Config{
 		ForwardLatency:    sc.ForwardLatency,
-		Idletime:          idletime,
+		Idletime:          spec.idletime,
 		ColdStartDuration: sc.ColdStartDuration,
-		TailLatencyProb:   prob,
-		Technique:         technique,
+		TailLatencyProb:   spec.prob,
+		Technique:         spec.technique,
 	}
 
 	idleDesc := "INF"
-	if idletime >= 0 {
-		idleDesc = fmt.Sprintf("%.1f", idletime)
+	if spec.idletime >= 0 {
+		idleDesc = fmt.Sprintf("%.1f", spec.idletime)
 	}
-	simulationName := fmt.Sprintf("%s_idletime%s_tlprob%s", technique, idleDesc, prob)
+	techDesc := spec.technique
+	if spec.technique != "baseline" {
+		techDesc = spec.technique + "_" + spec.scope
+	}
+	simulationName := fmt.Sprintf("%s_idletime%s_tlprob%s", techDesc, idleDesc, spec.prob)
 	fmt.Printf("[%d/%d] Running %s -> %s\n", count, total, simulationName, sc.OutputPath)
 
-	dataset := model.NewDataSet(trace, prob)
+	dataset := model.NewDataSet(trace, spec.prob, spec.scope)
 	router := common.NewRouter(dataset, cfg)
 	replayer := common.NewReplayer(dataset, router, simulationName)
 

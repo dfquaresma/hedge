@@ -36,9 +36,35 @@ Techniques:
 
 - `baseline` — replay as-is.
 - `hedged_request` — when a request runs past its tail-latency threshold
-  (`tailLatencyProb` percentile of its group), dispatch a copy to another
-  replica with a service time resampled from the group's empirical
-  distribution; whichever finishes last is cancelled.
+  (the `tailLatencyProb` percentile), dispatch a copy to another replica with
+  a service time resampled from the group's empirical distribution; whichever
+  finishes last is cancelled.
+
+## Threshold scope: heterogeneity-aware vs blind hedging
+
+Real multi-tenant traces are heterogeneous — latency distributions differ per
+tenant. `thresholdScope` controls which distribution defines the hedging
+threshold, enabling a three-way comparison on the same trace:
+
+| Scenario | Config | Threshold |
+|---|---|---|
+| no hedge | `technique: baseline` | — |
+| blind hedge | `hedged_request` + scope `global` | percentile of the **whole trace** |
+| heterogeneity-aware hedge | `hedged_request` + scope `per_group` | percentile of the request's **own app+func group** |
+
+With a heterogeneous trace, a global P95 sits between the tenants' individual
+P95s: fast tenants practically never reach it (their tail is never hedged),
+while for slow tenants it may fall below their median (over-hedging, inflating
+system load). The `per_group` scope calibrates the trigger per tenant.
+
+Only the threshold changes with scope — hedged copies always resample from
+the request's own group distribution, since a tenant's latency profile is a
+property of the workload, not of the policy. `baseline` runs once regardless
+of the configured scopes (its results are scope-independent), and omitting
+`thresholdScope` defaults to `["per_group"]`.
+
+To compare strictly per tenant (ignoring request classes), map `func` to the
+same column as `app` in the column mapping.
 
 ## Input format
 
@@ -58,8 +84,10 @@ groups are meaningless — for real traces use at least a few thousand).
 
 `traces/alb/sample-trace.csv` is a small **fully synthetic** example of the
 expected shape (fictitious tenants, RFC 5737 documentation IPs, generated
-latencies). No production data is committed to this repository — point
-`tracePath` at your local trace instead.
+latencies). Its three tenants have deliberately different latency profiles —
+fast/tight, slow/heavy-tailed and bimodal — so the threshold-scope comparison
+is visible even on the sample. No production data is committed to this
+repository — point `tracePath` at your local trace instead.
 
 ## Running
 
