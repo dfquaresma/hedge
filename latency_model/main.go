@@ -79,13 +79,13 @@ func generate(requests_count int, f, interarrival_distname, servicetime_distname
 		workload = append(
 			workload,
 			getBaseline(service_time, ts, generated_app, generated_func),
-			newHedge("naive_hedge", interarrival_dist.GetPercentile(0.95)).hedgedRequest(
+			newHedge("naive_hedge", servicetime_dist.GetPercentile(0.95)).hedgedRequest(
 				generated_app, generated_func, ts, service_time, copy_service_time,
 			),
-			newHedge("delayed_hedge_p95wc", interarrival_dist.GetPercentile(0.95)).hedgedRequest(
+			newHedge("delayed_hedge_p95wc", servicetime_dist.GetPercentile(0.95)).hedgedRequest(
 				generated_app, generated_func, ts, service_time, copy_service_time,
 			),
-			newHedge("perfect_hedge", interarrival_dist.GetPercentile(0.95)).hedgedRequest(
+			newHedge("perfect_hedge", servicetime_dist.GetPercentile(0.95)).hedgedRequest(
 				generated_app, generated_func, ts, service_time, copy_service_time,
 			),
 		)
