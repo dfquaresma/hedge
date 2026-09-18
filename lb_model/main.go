@@ -38,8 +38,8 @@ func getConfig(s string) runner.SimConfig {
 		TracePath:  viper.GetString(s + ".tracePath"),
 		OutputPath: viper.GetString(s + ".outputPath"),
 		Columns: model.ColumnMapping{
-			App:            viper.GetString(s + ".columns.app"),
-			Func:           viper.GetString(s + ".columns.func"),
+			Tenant:         viper.GetString(s + ".columns.tenant"),
+			Replica:        viper.GetString(s + ".columns.replica"),
 			StartTimestamp: viper.GetString(s + ".columns.startTimestamp"),
 			Duration:       viper.GetString(s + ".columns.duration"),
 		},
@@ -47,6 +47,7 @@ func getConfig(s string) runner.SimConfig {
 		TailLatencyProbs:  viper.GetStringSlice(s + ".resourceProvisioner.tailLatencyProb"),
 		ThresholdScopes:   viper.GetStringSlice(s + ".resourceProvisioner.thresholdScope"),
 		Idletimes:         viper.GetIntSlice(s + ".resourceProvisioner.idletime"),
+		MaxThreads:        viper.GetIntSlice(s + ".resourceProvisioner.maxThreads"),
 		ForwardLatency:    viper.GetFloat64(s + ".forwardLatency"),
 		ColdStartDuration: viper.GetFloat64(s + ".coldStartDuration"),
 		MinGroupSize:      viper.GetInt(s + ".minGroupSize"),

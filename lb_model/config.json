@@ -6,8 +6,8 @@
     "coldStartDuration": 0,
     "minGroupSize": 1,
     "columns": {
-      "app": "instance_id",
-      "func": "request_type",
+      "tenant": "instance_id",
+      "replica": "request_type",
       "startTimestamp": "request_creation_time",
       "duration": "target_processing_time"
     },
@@ -15,6 +15,29 @@
       "tailLatencyProb": ["p95", "p99"],
       "thresholdScope": ["per_group", "global"],
       "idletime": [-1, 0, 900],
+      "technique": [
+        "baseline",
+        "hedged_request"
+      ]
+    }
+  },
+  "alb_artorias": {
+    "tracePath": "../traces/processed/processed_data.csv",
+    "outputPath": "../sim_results/lb_model/alb_artorias/",
+    "forwardLatency": 0,
+    "coldStartDuration": 0,
+    "minGroupSize": 1000,
+    "columns": {
+      "tenant": "instance_id",
+      "replica": "target_ip",
+      "startTimestamp": "request_creation_time",
+      "duration": "target_processing_time"
+    },
+    "resourceProvisioner": {
+      "tailLatencyProb": ["p95", "p99"],
+      "thresholdScope": ["per_group", "global"],
+      "idletime": [-1, 0, 900],
+      "maxThreads": [10, 50, 200],
       "technique": [
         "baseline",
         "hedged_request"

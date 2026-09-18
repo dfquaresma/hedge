@@ -7,32 +7,32 @@ import (
 	"github.com/dfquaresma/hedge/lb_model/model"
 )
 
-// technique implements the tail-latency mitigation applied by a provisioner.
+// technique implements the tail-latency mitigation applied by a replica.
 // Supported values: "baseline" (no-op) and "hedged_request" (send a copy to
-// another replica once the original exceeds its tail-latency threshold,
-// cancelling whichever finishes last).
+// another thread in the same replica's pool once the original exceeds its
+// tail-latency threshold, cancelling whichever finishes last).
 type technique struct {
 	*godes.Runner
-	provisioner *provisioner
-	router      *router
-	config      string
-	rng         *rand.Rand
+	replica *replica
+	router  *router
+	config  string
+	rng     *rand.Rand
 }
 
-func newTechnique(p *provisioner, t string, r *router) *technique {
+func newTechnique(rep *replica, t string, r *router) *technique {
 	return &technique{
-		Runner:      &godes.Runner{},
-		provisioner: p,
-		router:      r,
-		config:      t,
-		// Deterministic per-provisioner seed keeps runs reproducible.
-		rng: rand.New(rand.NewSource(int64(len(p.rpID)) + 42)),
+		Runner:  &godes.Runner{},
+		replica: rep,
+		router:  r,
+		config:  t,
+		// Deterministic per-replica seed keeps runs reproducible.
+		rng: rand.New(rand.NewSource(int64(len(rep.replicaID)) + 42)),
 	}
 }
 
 // newLatency resamples a service time from the empirical distribution of the
-// invocation's app+func group — the copy is a brand-new execution, so it gets
-// its own draw rather than reusing the original's duration.
+// invocation's tenant+replica group — the copy is a brand-new execution, so
+// it gets its own draw rather than reusing the original's duration.
 func (t *technique) newLatency(id string) float64 {
 	latencies := t.router.getDataSet().GetLatenciesOf(id)
 	return latencies[t.rng.Intn(len(latencies))]
@@ -54,16 +54,22 @@ func (t *technique) trigger(i *model.Invocation) (bool, float64) {
 		return false, 0
 	}
 
+	th := t.replica.getAvailableThread()
+	if th == nil {
+		// Replica is at its thread cap: sending a copy would only add load
+		// to an already-saturated backend, so skip hedging this request.
+		return false, 0
+	}
+
 	iCopy := model.CopyInvocation(i)
 	iCopy.SetForwardedTs(godes.GetSystemTime())
-	iCopy.SetDuration(t.newLatency(i.GetAppID() + i.GetFuncID()))
-	replica := t.provisioner.getAvailableReplica()
-	copyReplicaIsWarm := replica.getRequestCount() != 0
-	replica.process(iCopy)
+	iCopy.SetDuration(t.newLatency(i.GetTenantID() + i.GetReplicaID()))
+	copyThreadIsWarm := th.getRequestCount() != 0
+	th.process(iCopy)
 
 	// The original is cancelled if the copy is faster, but only when the
-	// copy landed on a warm replica and thus pays no warm-up penalty.
-	if i.GetDuration() > iCopy.GetDuration() && copyReplicaIsWarm {
+	// copy landed on a warm thread and thus pays no warm-up penalty.
+	if i.GetDuration() > iCopy.GetDuration() && copyThreadIsWarm {
 		return true, iCopy.GetDuration()
 	}
 	return false, 0

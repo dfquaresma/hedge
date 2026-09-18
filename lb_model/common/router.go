@@ -6,8 +6,12 @@ import (
 	"github.com/dfquaresma/hedge/lb_model/model"
 )
 
+// router dispatches each invocation to the replica identified by its
+// replicaID alone — tenant is not part of the lookup key, since a physical
+// replica is shared by every tenant routed to it (multi-tenant contention on
+// shared infrastructure is exactly what this model is meant to capture).
 type router struct {
-	provisioners  map[string]*provisioner
+	replicas      map[string]*replica
 	dataset       *model.Dataset
 	cfg           model.Config
 	register      [][]string
@@ -16,10 +20,10 @@ type router struct {
 
 func NewRouter(dataset *model.Dataset, cfg model.Config) *router {
 	return &router{
-		provisioners: make(map[string]*provisioner),
-		dataset:      dataset,
-		cfg:          cfg,
-		register:     [][]string{},
+		replicas: make(map[string]*replica),
+		dataset:  dataset,
+		cfg:      cfg,
+		register: [][]string{},
 	}
 }
 
@@ -27,49 +31,49 @@ func (r *router) getDataSet() *model.Dataset {
 	return r.dataset
 }
 
-func (r *router) getProvisioner(i *model.Invocation) *provisioner {
-	rp := r.provisioners[i.GetAppID()+i.GetFuncID()]
-	if rp == nil {
-		rp = r.newProvisioner(i.GetAppID(), i.GetFuncID())
+func (r *router) getReplica(i *model.Invocation) *replica {
+	rep := r.replicas[i.GetReplicaID()]
+	if rep == nil {
+		rep = r.newReplica(i.GetReplicaID())
 	}
-	return rp
+	return rep
 }
 
-func (r *router) newProvisioner(aid, fid string) *provisioner {
-	rp := newProvisioner(aid, fid, r.cfg, r)
-	r.provisioners[aid+fid] = rp
-	return rp
+func (r *router) newReplica(replicaID string) *replica {
+	rep := newReplica(replicaID, r.cfg, r)
+	r.replicas[replicaID] = rep
+	return rep
 }
 
 func (r *router) forward(i *model.Invocation) {
-	r.getProvisioner(i).forward(i)
+	r.getReplica(i).forward(i)
 }
 
 func (r *router) terminate() {
-	for _, p := range r.provisioners {
-		p.terminate()
+	for _, rep := range r.replicas {
+		rep.terminate()
 	}
 }
 
-func (r *router) registerReplicaScaling(funcID string, amount int64, timestamp float64) {
+func (r *router) registerReplicaScaling(replicaID string, amount int64, timestamp float64) {
 	r.replicasCount += amount
 	replicasCountStr := strconv.FormatInt(r.replicasCount, 10)
 	timestampStr := strconv.FormatFloat(timestamp, 'f', -1, 64)
-	r.register = append(r.register, []string{funcID, replicasCountStr, timestampStr})
+	r.register = append(r.register, []string{replicaID, replicasCountStr, timestampStr})
 }
 
 func (r *router) GetOutPut() ([][]string, [][]string) {
-	p_res := [][]string{}
-	header := []string{"replicaID", "rpID", "appID", "funcID", "busyTime", "upTime", "reqsProcessed", "lastWorkTS", "startTS", "shutdownTS"}
-	p_res = append(p_res, header)
-	for _, p := range r.provisioners {
-		p_res = append(p_res, p.getOutPut()...)
+	t_res := [][]string{}
+	header := []string{"threadID", "replicaID", "busyTime", "upTime", "reqsProcessed", "lastWorkTS", "startTS", "shutdownTS"}
+	t_res = append(t_res, header)
+	for _, rep := range r.replicas {
+		t_res = append(t_res, rep.getOutPut()...)
 	}
 
 	r_res := [][]string{}
-	header = []string{"funcID", "replica_amount", "timestamp"}
+	header = []string{"replicaID", "thread_amount", "timestamp"}
 	r_res = append(r_res, header)
 	r_res = append(r_res, r.register...)
 
-	return p_res, r_res
+	return t_res, r_res
 }

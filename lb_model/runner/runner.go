@@ -20,6 +20,7 @@ type SimConfig struct {
 	TailLatencyProbs  []string
 	ThresholdScopes   []string
 	Idletimes         []int
+	MaxThreads        []int // per replica; empty or containing 0 sweeps "unlimited"
 	ForwardLatency    float64
 	ColdStartDuration float64
 	MinGroupSize      int
@@ -27,30 +28,38 @@ type SimConfig struct {
 
 // runSpec is one point of the parameter grid.
 type runSpec struct {
-	prob      string
-	technique string
-	scope     string
-	idletime  float64
+	prob       string
+	technique  string
+	scope      string
+	idletime   float64
+	maxThreads int
 }
 
 // expandRuns builds the parameter grid. The threshold scope only matters for
-// techniques that hedge, so baseline runs once per prob x idletime instead of
-// once per scope — its results are identical under any scope.
+// techniques that hedge, so baseline runs once per prob x idletime x
+// maxThreads instead of once per scope — its results are identical under any
+// scope.
 func expandRuns(sc SimConfig) []runSpec {
 	scopes := sc.ThresholdScopes
 	if len(scopes) == 0 {
 		scopes = []string{model.ScopePerGroup}
 	}
+	maxThreads := sc.MaxThreads
+	if len(maxThreads) == 0 {
+		maxThreads = []int{0} // 0 = unlimited
+	}
 	specs := []runSpec{}
 	for _, p := range sc.TailLatencyProbs {
 		for _, i := range sc.Idletimes {
-			for _, t := range sc.Techniques {
-				if t == "baseline" {
-					specs = append(specs, runSpec{prob: p, technique: t, scope: model.ScopePerGroup, idletime: float64(i)})
-					continue
-				}
-				for _, s := range scopes {
-					specs = append(specs, runSpec{prob: p, technique: t, scope: s, idletime: float64(i)})
+			for _, mt := range maxThreads {
+				for _, t := range sc.Techniques {
+					if t == "baseline" {
+						specs = append(specs, runSpec{prob: p, technique: t, scope: model.ScopePerGroup, idletime: float64(i), maxThreads: mt})
+						continue
+					}
+					for _, s := range scopes {
+						specs = append(specs, runSpec{prob: p, technique: t, scope: s, idletime: float64(i), maxThreads: mt})
+					}
 				}
 			}
 		}
@@ -59,7 +68,8 @@ func expandRuns(sc SimConfig) []runSpec {
 }
 
 // Sim parses the trace once and replays it under every combination of
-// tailLatencyProb x idletime x technique, writing one result set per run.
+// tailLatencyProb x idletime x maxThreads x technique, writing one result
+// set per run.
 func Sim(sc SimConfig) {
 	start := time.Now()
 
@@ -90,6 +100,7 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 		ForwardLatency:    sc.ForwardLatency,
 		Idletime:          spec.idletime,
 		ColdStartDuration: sc.ColdStartDuration,
+		MaxThreads:        spec.maxThreads,
 		TailLatencyProb:   spec.prob,
 		Technique:         spec.technique,
 	}
@@ -98,11 +109,15 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 	if spec.idletime >= 0 {
 		idleDesc = fmt.Sprintf("%.1f", spec.idletime)
 	}
+	maxThreadsDesc := "INF"
+	if spec.maxThreads > 0 {
+		maxThreadsDesc = fmt.Sprintf("%d", spec.maxThreads)
+	}
 	techDesc := spec.technique
 	if spec.technique != "baseline" {
 		techDesc = spec.technique + "_" + spec.scope
 	}
-	simulationName := fmt.Sprintf("%s_idletime%s_tlprob%s", techDesc, idleDesc, spec.prob)
+	simulationName := fmt.Sprintf("%s_idletime%s_maxthreads%s_tlprob%s", techDesc, idleDesc, maxThreadsDesc, spec.prob)
 	fmt.Printf("[%d/%d] Running %s -> %s\n", count, total, simulationName, sc.OutputPath)
 
 	dataset := model.NewDataSet(trace, spec.prob, spec.scope)
@@ -114,9 +129,9 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 
 	io.WriteOutput(sc.OutputPath, simulationName+"-invocations.csv", dataset.GetOutPut())
 
-	replicasOutput, scalingOutput := router.GetOutPut()
-	io.WriteOutput(sc.OutputPath, simulationName+"-replicas.csv", replicasOutput)
-	io.WriteOutput(sc.OutputPath, simulationName+"-provisioners.csv", scalingOutput)
+	threadsOutput, scalingOutput := router.GetOutPut()
+	io.WriteOutput(sc.OutputPath, simulationName+"-threads.csv", threadsOutput)
+	io.WriteOutput(sc.OutputPath, simulationName+"-replicas.csv", scalingOutput)
 
 	return replayer.GetOutPut()
 }
