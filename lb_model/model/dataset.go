@@ -30,6 +30,12 @@ type Trace struct {
 	globalPercentiles percentile
 	groupSizes        map[string]int64
 	latencies         map[string][]float64
+	// ReplicaIDs lists every distinct replica seen in the trace, sorted for
+	// a deterministic order. It lets a simulation run create every replica
+	// upfront (see common.NewRouter) so a load-balancer policy has the full,
+	// stable set to choose from from the very first invocation, rather than
+	// discovering replicas lazily as the replay encounters them.
+	ReplicaIDs []string
 }
 
 type parsedRow struct {
@@ -92,6 +98,7 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 
 	rows := make([]parsedRow, 0, 1<<20)
 	durationsByGroup := make(map[string][]float64)
+	replicaIDSet := make(map[string]struct{})
 	total := 0
 	skipped := 0
 	for {
@@ -111,10 +118,17 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 		rows = append(rows, row)
 		key := row.tenantID + row.replicaID
 		durationsByGroup[key] = append(durationsByGroup[key], row.duration)
+		replicaIDSet[row.replicaID] = struct{}{}
 	}
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("no valid rows in trace (%d skipped)", skipped)
 	}
+
+	replicaIDs := make([]string, 0, len(replicaIDSet))
+	for id := range replicaIDSet {
+		replicaIDs = append(replicaIDs, id)
+	}
+	sort.Strings(replicaIDs)
 
 	percentiles := make(map[string]percentile)
 	groupSizes := make(map[string]int64)
@@ -179,6 +193,7 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 		globalPercentiles: globalPercentiles,
 		groupSizes:        groupSizes,
 		latencies:         durationsByGroup,
+		ReplicaIDs:        replicaIDs,
 	}, nil
 }
 

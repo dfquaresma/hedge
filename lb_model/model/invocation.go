@@ -65,6 +65,15 @@ func (i *Invocation) SetDuration(nd float64) {
 	i.te.duration = nd
 }
 
+// SetReplicaID re-targets a hedge copy to the replica that will actually
+// process it — set once the load balancer has picked an alternate replica,
+// so output/debugging reflects where the copy really ran. The latency it
+// samples still comes from the original tenant+replica's own distribution
+// (see technique.go), independent of this.
+func (i *Invocation) SetReplicaID(id string) {
+	i.te.replicaID = id
+}
+
 func (i *Invocation) GetTailLatencyThreshold() float64 {
 	return i.te.tailLatency.getTailLatencyThreshold()
 }

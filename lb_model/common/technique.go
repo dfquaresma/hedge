@@ -9,8 +9,12 @@ import (
 
 // technique implements the tail-latency mitigation applied by a replica.
 // Supported values: "baseline" (no-op) and "hedged_request" (send a copy to
-// another thread in the same replica's pool once the original exceeds its
-// tail-latency threshold, cancelling whichever finishes last).
+// a different replica, chosen by the router's load-balancer policy, once
+// the original exceeds its tail-latency threshold; cancelling whichever
+// finishes last). The copy targets another replica rather than another
+// thread on the same one, since hedging within the replica that's already
+// slow doesn't protect against replica-level causes (a noisy neighbor, a GC
+// pause on that specific backend) and only adds load to it.
 type technique struct {
 	*godes.Runner
 	replica *replica
@@ -54,19 +58,30 @@ func (t *technique) trigger(i *model.Invocation) (bool, float64) {
 		return false, 0
 	}
 
+	altReplica := t.router.pickHedgeReplica(t.replica.replicaID)
+	if altReplica == nil {
+		// No alternate replica exists (e.g. the trace has only one) —
+		// there's nowhere else to send a copy.
+		return false, 0
+	}
+
 	iCopy := model.CopyInvocation(i)
 	iCopy.SetForwardedTs(godes.GetSystemTime())
+	// Sampled from the original tenant+replica's own empirical
+	// distribution — a random historical latency of that tenant's, not the
+	// alternate replica's profile, which may look nothing like it.
 	iCopy.SetDuration(t.newLatency(i.GetTenantID() + i.GetReplicaID()))
+	iCopy.SetReplicaID(altReplica.replicaID)
 
-	th := t.replica.getAvailableThread()
+	th := altReplica.getAvailableThread()
 	if th == nil {
-		// Replica is at its thread cap: queue the copy like any other
-		// invocation instead of dropping it (dispatched in setAvailable
-		// once a thread frees up). Its eventual finish time will include
-		// that wait, which we can't know yet, so skip the early-cancel
-		// decision for this dispatch — the copy's response is still
-		// recorded normally via processResponse once it completes.
-		t.replica.forward(iCopy)
+		// Alternate replica is at its thread cap: queue the copy there like
+		// any other invocation instead of dropping it (dispatched in
+		// setAvailable once a thread frees up). Its eventual finish time
+		// will include that wait, which we can't know yet, so skip the
+		// early-cancel decision for this dispatch — the copy's response is
+		// still recorded normally via processResponse once it completes.
+		altReplica.forward(iCopy)
 		return false, 0
 	}
 	copyThreadIsWarm := th.getRequestCount() != 0

@@ -23,7 +23,8 @@ replayer → router → replica → thread architecture, adapted from
 
 ```
 replayer   reads the chronological trace, advances the simulation clock
-   └─> router          one replica per replicaID (shared by every tenant routed to it)
+   └─> router          one replica per replicaID (shared by every tenant routed to it);
+          │            owns the load balancer that picks a hedge copy's destination
           └─> replica         bounded pool of threads, idletime-based scale-down
                  └─> thread       one concurrency slot; serves one request at a time
 ```
@@ -46,12 +47,26 @@ Techniques:
 
 - `baseline` — replay as-is.
 - `hedged_request` — when a request runs past its tail-latency threshold
-  (the `tailLatencyProb` percentile), dispatch a copy to another thread in
-  the same replica's pool, with a service time resampled from the group's
-  empirical distribution; whichever finishes last is cancelled. If the
-  replica is at its thread cap with none free, the copy queues like any
-  other request instead of being dropped — it is dispatched as soon as a
-  thread frees up, and its measured response time reflects that wait.
+  (the `tailLatencyProb` percentile), dispatch a copy to a **different**
+  replica, chosen by the router's load-balancer policy — never another
+  thread on the same replica, since hedging within an already-slow replica
+  doesn't protect against replica-level causes (a noisy neighbor, a GC pause
+  on that specific backend) and, with pools now shared across tenants, would
+  only add load to it. The copy's service time is still resampled from the
+  *original* tenant+replica's own empirical distribution — a random
+  historical latency of that tenant's, not a profile of the alternate
+  replica, which may look nothing like it. Whichever of {original, copy}
+  finishes last is cancelled. If the alternate replica is at its thread cap
+  with none free, the copy queues there like any other request instead of
+  being dropped — it is dispatched as soon as a thread frees up, and its
+  measured response time reflects that wait.
+
+  The default (and only, for now) load-balancer policy is **round-robin**
+  across every replica in the trace, skipping the invocation's own replica.
+  Every replica is created upfront from the trace's full set of replicaIDs
+  (known once the trace is parsed), not discovered lazily as the replay
+  encounters them, so the rotation is complete and stable from the first
+  invocation.
 
 ## Threshold scope: heterogeneity-aware vs blind hedging
 

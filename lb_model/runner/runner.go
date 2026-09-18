@@ -121,7 +121,7 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 	fmt.Printf("[%d/%d] Running %s -> %s\n", count, total, simulationName, sc.OutputPath)
 
 	dataset := model.NewDataSet(trace, spec.prob, spec.scope)
-	router := common.NewRouter(dataset, cfg)
+	router := common.NewRouter(dataset, cfg, trace.ReplicaIDs)
 	replayer := common.NewReplayer(dataset, router, simulationName)
 
 	replayer.Run()
