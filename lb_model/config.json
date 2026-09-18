@@ -37,7 +37,7 @@
       "tailLatencyProb": ["p95", "p99"],
       "thresholdScope": ["per_group", "global"],
       "idletime": [-1, 0, 900],
-      "maxThreads": [10, 50, 200],
+      "maxThreads": [50],
       "technique": [
         "baseline",
         "hedged_request"

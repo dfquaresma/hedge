@@ -49,8 +49,9 @@ Techniques:
   (the `tailLatencyProb` percentile), dispatch a copy to another thread in
   the same replica's pool, with a service time resampled from the group's
   empirical distribution; whichever finishes last is cancelled. If the
-  replica is at its thread cap with none free, the copy is skipped rather
-  than adding load to an already-saturated backend.
+  replica is at its thread cap with none free, the copy queues like any
+  other request instead of being dropped — it is dispatched as soon as a
+  thread frees up, and its measured response time reflects that wait.
 
 ## Threshold scope: heterogeneity-aware vs blind hedging
 

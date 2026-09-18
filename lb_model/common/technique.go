@@ -54,16 +54,21 @@ func (t *technique) trigger(i *model.Invocation) (bool, float64) {
 		return false, 0
 	}
 
-	th := t.replica.getAvailableThread()
-	if th == nil {
-		// Replica is at its thread cap: sending a copy would only add load
-		// to an already-saturated backend, so skip hedging this request.
-		return false, 0
-	}
-
 	iCopy := model.CopyInvocation(i)
 	iCopy.SetForwardedTs(godes.GetSystemTime())
 	iCopy.SetDuration(t.newLatency(i.GetTenantID() + i.GetReplicaID()))
+
+	th := t.replica.getAvailableThread()
+	if th == nil {
+		// Replica is at its thread cap: queue the copy like any other
+		// invocation instead of dropping it (dispatched in setAvailable
+		// once a thread frees up). Its eventual finish time will include
+		// that wait, which we can't know yet, so skip the early-cancel
+		// decision for this dispatch — the copy's response is still
+		// recorded normally via processResponse once it completes.
+		t.replica.forward(iCopy)
+		return false, 0
+	}
 	copyThreadIsWarm := th.getRequestCount() != 0
 	th.process(iCopy)
 
