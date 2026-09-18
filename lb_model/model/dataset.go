@@ -1,7 +1,10 @@
 package model
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strconv"
 	"time"
@@ -51,28 +54,48 @@ var timestampLayouts = []string{
 	"2006-01-02 15:04:05",
 }
 
-// ParseTrace turns raw CSV records (header included) into a Trace. Columns
-// are located by name through the ColumnMapping, so any CSV that carries the
+// ParseTrace streams tracePath and turns it into a Trace. Columns are
+// located by name through the ColumnMapping, so any CSV that carries the
 // four required fields can be replayed regardless of column order or extra
-// fields. Rows with a non-positive or unparsable duration and rows whose
-// app+func group has fewer than minGroupSize samples are dropped: percentile
-// estimates for tiny groups are meaningless as hedging thresholds.
-// Timestamps are normalized to start at zero and rows are sorted by start
-// time, as the replayer expects a chronological trace.
-func ParseTrace(records [][]string, cols ColumnMapping, minGroupSize int) (*Trace, error) {
-	if len(records) < 2 {
+// fields; only those four fields are ever held in memory per row, so extra
+// columns cost nothing beyond the read itself. Rows with a non-positive or
+// unparsable duration and rows whose app+func group has fewer than
+// minGroupSize samples are dropped: percentile estimates for tiny groups are
+// meaningless as hedging thresholds. Timestamps are normalized to start at
+// zero and rows are sorted by start time, as the replayer expects a
+// chronological trace.
+func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace, error) {
+	f, err := os.Open(tracePath)
+	if err != nil {
+		return nil, fmt.Errorf("opening trace: %w", err)
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.ReuseRecord = true
+
+	header, err := r.Read()
+	if err != nil {
 		return nil, fmt.Errorf("trace has no data rows")
 	}
-
-	colIdx, err := resolveColumns(records[0], cols)
+	colIdx, err := resolveColumns(header, cols)
 	if err != nil {
 		return nil, err
 	}
 
-	rows := make([]parsedRow, 0, len(records)-1)
+	rows := make([]parsedRow, 0, 1<<20)
 	durationsByGroup := make(map[string][]float64)
+	total := 0
 	skipped := 0
-	for _, record := range records[1:] {
+	for {
+		record, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading trace: %w", err)
+		}
+		total++
 		row, ok := parseRow(record, colIdx)
 		if !ok {
 			skipped++
@@ -140,7 +163,7 @@ func ParseTrace(records [][]string, cols ColumnMapping, minGroupSize int) (*Trac
 
 	fmt.Printf(
 		"Trace parsed: %d invocations, %d app+func groups, %d rows dropped (invalid or below minGroupSize=%d)\n",
-		len(rows), len(groupSizes), len(records)-1-len(rows), minGroupSize,
+		len(rows), len(groupSizes), total-len(rows), minGroupSize,
 	)
 
 	return &Trace{
