@@ -3,7 +3,6 @@ package model
 // Config holds the parameters of a single simulation run.
 type Config struct {
 	ForwardLatency    float64
-	Idletime          float64
 	ColdStartDuration float64
 	MaxThreads        int // 0 = unlimited concurrent threads per replica
 	TailLatencyProb   string

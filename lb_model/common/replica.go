@@ -67,20 +67,16 @@ func (r *replica) setAvailable(t *thread) {
 	r.availableThreads.Place(t)
 }
 
-// getAvailableThread returns an idle thread, spins up a new one if the pool
-// hasn't reached cfg.MaxThreads, or returns nil if it's at capacity — the
-// caller (forward) then queues the invocation in pending. MaxThreads <= 0
-// means unlimited, preserving the original unbounded-pool behaviour.
+// getAvailableThread returns an idle thread if one exists, spins up a new
+// one if the pool hasn't reached cfg.MaxThreads, or returns nil if it's at
+// capacity — the caller (forward) then queues the invocation in pending.
+// MaxThreads <= 0 means unlimited, preserving the original unbounded-pool
+// behaviour. Threads are never scaled down mid-run (they terminate once,
+// all at once, when the replica itself terminates at trace end), so any
+// thread found here is always reusable — no staleness check needed.
 func (r *replica) getAvailableThread() *thread {
-	for r.availableThreads.Len() > 0 {
-		t := r.availableThreads.Get().(*thread)
-		if t.terminatedCond.GetState() {
-			continue
-		}
-		if r.cfg.Idletime < 0 || r.cfg.Idletime > godes.GetSystemTime()-t.lastWorkTS {
-			return t
-		}
-		t.terminate()
+	if r.availableThreads.Len() > 0 {
+		return r.availableThreads.Get().(*thread)
 	}
 	if r.cfg.MaxThreads > 0 && r.activeThreads >= r.cfg.MaxThreads {
 		return nil

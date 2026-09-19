@@ -1,7 +1,6 @@
 package common
 
 import (
-	"math"
 	"strconv"
 
 	"github.com/agoussia/godes"
@@ -126,9 +125,6 @@ func (t *thread) Run() {
 
 func (t *thread) setUptimeStats() {
 	t.shutdownTS = godes.GetSystemTime()
-	if t.cfg.Idletime >= 0 {
-		t.shutdownTS = math.Min(t.shutdownTS, t.lastWorkTS+t.cfg.Idletime)
-	}
 	t.parent.notifyTermination(t.shutdownTS)
 	t.upTime = t.shutdownTS - t.startTS
 }
