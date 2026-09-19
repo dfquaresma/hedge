@@ -43,12 +43,10 @@ func getConfig(s string) runner.SimConfig {
 			StartTimestamp: viper.GetString(s + ".columns.startTimestamp"),
 			Duration:       viper.GetString(s + ".columns.duration"),
 		},
-		Techniques:        viper.GetStringSlice(s + ".resourceProvisioner.technique"),
-		TailLatencyProbs:  viper.GetStringSlice(s + ".resourceProvisioner.tailLatencyProb"),
-		ThresholdScopes:   viper.GetStringSlice(s + ".resourceProvisioner.thresholdScope"),
-		MaxThreads:        viper.GetIntSlice(s + ".resourceProvisioner.maxThreads"),
-		ForwardLatency:    viper.GetFloat64(s + ".forwardLatency"),
-		ColdStartDuration: viper.GetFloat64(s + ".coldStartDuration"),
-		MinGroupSize:      viper.GetInt(s + ".minGroupSize"),
+		Techniques:       viper.GetStringSlice(s + ".resourceProvisioner.technique"),
+		TailLatencyProbs: viper.GetStringSlice(s + ".resourceProvisioner.tailLatencyProb"),
+		ThresholdScopes:  viper.GetStringSlice(s + ".resourceProvisioner.thresholdScope"),
+		MaxThreads:       viper.GetIntSlice(s + ".resourceProvisioner.maxThreads"),
+		MinGroupSize:     viper.GetInt(s + ".minGroupSize"),
 	}
 }

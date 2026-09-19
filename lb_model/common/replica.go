@@ -83,7 +83,7 @@ func (r *replica) getAvailableThread() *thread {
 	}
 	r.activeThreads++
 	r.threadSeq++
-	t := newThread(r, r.replicaID+"-"+strconv.Itoa(r.threadSeq), r.cfg)
+	t := newThread(r, r.replicaID+"-"+strconv.Itoa(r.threadSeq))
 	godes.AddRunner(t)
 	r.threads = append(r.threads, t)
 	return t

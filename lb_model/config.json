@@ -2,8 +2,6 @@
   "alb_sample": {
     "tracePath": "../traces/alb/sample-trace.csv",
     "outputPath": "../sim_results/lb_model/alb_sample/",
-    "forwardLatency": 0,
-    "coldStartDuration": 0,
     "minGroupSize": 1,
     "columns": {
       "tenant": "instance_id",
@@ -23,8 +21,6 @@
   "alb_artorias": {
     "tracePath": "../traces/processed/processed_data.csv",
     "outputPath": "../sim_results/lb_model/alb_artorias/",
-    "forwardLatency": 0,
-    "coldStartDuration": 0,
     "minGroupSize": 1000,
     "columns": {
       "tenant": "instance_id",

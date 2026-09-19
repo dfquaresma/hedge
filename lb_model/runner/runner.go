@@ -13,16 +13,14 @@ import (
 // replay, how to interpret its columns and the grid of simulation parameters
 // to sweep.
 type SimConfig struct {
-	TracePath         string
-	OutputPath        string
-	Columns           model.ColumnMapping
-	Techniques        []string
-	TailLatencyProbs  []string
-	ThresholdScopes   []string
-	MaxThreads        []int // per replica; empty or containing 0 sweeps "unlimited"
-	ForwardLatency    float64
-	ColdStartDuration float64
-	MinGroupSize      int
+	TracePath        string
+	OutputPath       string
+	Columns          model.ColumnMapping
+	Techniques       []string
+	TailLatencyProbs []string
+	ThresholdScopes  []string
+	MaxThreads       []int // per replica; empty or containing 0 sweeps "unlimited"
+	MinGroupSize     int
 }
 
 // runSpec is one point of the parameter grid.
@@ -91,11 +89,9 @@ func Sim(sc SimConfig) {
 
 func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) []string {
 	cfg := model.Config{
-		ForwardLatency:    sc.ForwardLatency,
-		ColdStartDuration: sc.ColdStartDuration,
-		MaxThreads:        spec.maxThreads,
-		TailLatencyProb:   spec.prob,
-		Technique:         spec.technique,
+		MaxThreads:      spec.maxThreads,
+		TailLatencyProb: spec.prob,
+		Technique:       spec.technique,
 	}
 
 	maxThreadsDesc := "INF"
@@ -116,8 +112,20 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 	replayer.Run()
 	fmt.Println("Simulation for " + simulationName + " is finished")
 
-	io.WriteOutput(sc.OutputPath, simulationName+"-invocations.csv", dataset.GetOutPut())
+	invocationsWriter, err := io.NewStreamWriter(sc.OutputPath, simulationName+"-invocations.csv")
+	if err != nil {
+		panic(err)
+	}
+	if err := dataset.WriteOutput(invocationsWriter); err != nil {
+		panic(err)
+	}
+	if err := invocationsWriter.Close(); err != nil {
+		panic(err)
+	}
 
+	// threads/replicas outputs are small (hundreds to thousands of rows, one
+	// row per thread or scaling event) — not the memory bottleneck the
+	// invocations file is, so they stay buffered via WriteOutput.
 	threadsOutput, scalingOutput := router.GetOutPut()
 	io.WriteOutput(sc.OutputPath, simulationName+"-threads.csv", threadsOutput)
 	io.WriteOutput(sc.OutputPath, simulationName+"-replicas.csv", scalingOutput)

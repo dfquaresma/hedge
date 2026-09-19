@@ -1,12 +1,15 @@
 package model
 
 // Config holds the parameters of a single simulation run.
+//
+// There is no cold-start/warm-up or forwarding-latency knob: a replica in
+// this model represents an idealized downstream service — it scales its
+// thread pool on demand (unbounded unless MaxThreads caps it) and a fresh
+// thread costs nothing extra to spin up.
 type Config struct {
-	ForwardLatency    float64
-	ColdStartDuration float64
-	MaxThreads        int // 0 = unlimited concurrent threads per replica
-	TailLatencyProb   string
-	Technique         string
+	MaxThreads      int // 0 = unlimited concurrent threads per replica
+	TailLatencyProb string
+	Technique       string
 }
 
 // ColumnMapping names the trace columns holding each field the simulator
@@ -20,14 +23,17 @@ type ColumnMapping struct {
 	Duration       string
 }
 
+// traceEntry is an invocation's link back to trace data. row points into
+// Trace.rows — the same backing array shared read-only by every simulation
+// run of this trace, never reallocated per run — so only tailLatency
+// (which depends on the run's tlProb/scope) needs to change between runs.
+//
+// A hedge copy gets its own private *parsedRow (see CopyInvocation) rather
+// than sharing the original's, since its replicaID and duration are set
+// after creation (SetReplicaID, SetDuration) and must not corrupt the
+// shared row other runs still read.
 type traceEntry struct {
-	tenantID  string
-	replicaID string
-	groupSize int64
-	startTS   float64
-	duration  float64
-	endTS     float64
-
+	row         *parsedRow
 	tailLatency *tailLatency
 }
 
