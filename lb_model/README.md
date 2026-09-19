@@ -25,7 +25,7 @@ replayer → router → replica → thread architecture, adapted from
 replayer   reads the chronological trace, advances the simulation clock
    └─> router          one replica per replicaID (shared by every tenant routed to it);
           │            owns the load balancer that picks a hedge copy's destination
-          └─> replica         bounded pool of threads, idletime-based scale-down
+          └─> replica         bounded pool of threads, created once and kept for the run
                  └─> thread       one concurrency slot; serves one request at a time
 ```
 
@@ -42,6 +42,12 @@ counts in the outputs read as "busy slots over time". `resourceProvisioner.maxTh
 caps how many threads a replica may run at once (0 or omitted = unlimited,
 the original unbounded-pool behaviour); once at the cap, incoming requests
 queue for the next thread that frees up rather than spinning up a new one.
+Threads are never scaled back down mid-run — once created, a thread is
+reused for the rest of the run and only terminates when the whole
+simulation ends. There is no idle-timeout/scale-down knob (no `idletime`
+config): it added sweep dimensions and thread-churn overhead without
+changing what a run measures, since threads are stateless slots, not a
+cost this model prices.
 
 Techniques:
 
@@ -135,8 +141,8 @@ go run .
 ```
 
 Each section of `config.json` is one trace; the parameter grid
-(`tailLatencyProb` × `idletime` × `maxThreads` × `technique`) is swept per
-section. Per run, three CSVs are written to `outputPath`:
+(`tailLatencyProb` × `maxThreads` × `technique`) is swept per section. Per
+run, three CSVs are written to `outputPath`:
 
 - `*-invocations.csv` — per-request `duration`, `responseTime` and
   `techniqueResponseTime`
