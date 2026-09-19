@@ -104,18 +104,16 @@ func (i *Invocation) GetSrcInvoc() *Invocation {
 	return i.im.srcInvoc
 }
 
+// getOutPut returns this invocation's simulation-produced fields only —
+// tenantID, replicaID, startTS, duration and endTS all live in
+// Trace.WriteIndex's output instead, written once per trace rather than
+// once per run, since an original invocation's row is immutable (see
+// traceEntry) and therefore identical across every run over this trace.
+// rowID is the join key back to that file.
 func (i *Invocation) getOutPut() []string {
-	endTS := i.te.row.startTS + i.te.row.duration
 	return []string{
-		i.te.row.tenantID,
-		i.te.row.replicaID,
 		i.im.invocationId,
-
-		strconv.FormatFloat(endTS, 'f', -1, 64),
-		strconv.FormatFloat(i.te.row.startTS, 'f', -1, 64),
 		strconv.FormatFloat(i.te.tailLatency.getTailLatencyThreshold(), 'f', -1, 64),
-
-		strconv.FormatFloat(i.te.row.duration, 'f', -1, 64),
 		strconv.FormatFloat(i.im.responseTime, 'f', -1, 64),
 		strconv.FormatFloat(i.im.techniqueResponseTime, 'f', -1, 64),
 	}

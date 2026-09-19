@@ -146,12 +146,31 @@ go run .
 ```
 
 Each section of `config.json` is one trace; the parameter grid
-(`tailLatencyProb` × `maxThreads` × `technique`) is swept per section. Per
-run, three CSVs are written to `outputPath`:
+(`tailLatencyProb` × `maxThreads` × `technique`) is swept per section.
+`outputPath` gets, once per section:
 
-- `*-invocations.csv` — per-request `duration`, `responseTime` and
-  `techniqueResponseTime`
+- `trace-index.csv` — `rowID`, `tenantID`, `replicaID`, `startTS`, `duration`
+  for every kept row, written **once**, not once per run. An original
+  invocation's row is immutable across every run over the same trace (see
+  "Modeling philosophy" above), so repeating these columns in every run's
+  output would just be identical bytes copied once per grid point.
+
+and per run:
+
+- `*-invocations.csv` — `rowID` (the join key back to `trace-index.csv`),
+  `tl_threshold`, `responseTime` and `techniqueResponseTime`: only the
+  columns that run's simulation actually produced.
 - `*-threads.csv` — per-thread `busyTime`, `upTime`, requests processed
 - `*-replicas.csv` — thread-count scaling timeline
 
 plus a `replayer-stats.csv` with wall-clock time per run.
+
+Splitting identity out of the per-run file matters at scale: on a 6.4M-row
+real trace, `*-invocations.csv` used to carry a full-length tenant UUID and
+replica IP on every row (a lot of repeated bytes for identifiers with only
+tens of distinct values) plus a `startTS` inflated to 15-17 digits by
+floating-point noise from the trace-normalizing subtraction in `ParseTrace`
+— none of it changing between runs. Moving that to `trace-index.csv` (written
+once, ~500MB regardless of how many runs sweep the trace) and keeping
+`startTS` at a fixed nanosecond precision there cut each run's
+`*-invocations.csv` from ~700MB to under 200MB.
