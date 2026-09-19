@@ -70,6 +70,20 @@ func Sim(sc SimConfig) {
 		panic(err)
 	}
 
+	// Written once per trace, not once per grid point: every run's
+	// *-invocations.csv joins back to this file by rowID instead of
+	// repeating identity columns that never change between runs.
+	indexWriter, err := io.NewStreamWriter(sc.OutputPath, "trace-index.csv")
+	if err != nil {
+		panic(err)
+	}
+	if err := trace.WriteIndex(indexWriter); err != nil {
+		panic(err)
+	}
+	if err := indexWriter.Close(); err != nil {
+		panic(err)
+	}
+
 	specs := expandRuns(sc)
 	io.WriteOutputHeaderRow(sc.OutputPath, "replayer-stats.csv", []string{"elapsedTime", "currentTime", "id"})
 	for count, spec := range specs {
