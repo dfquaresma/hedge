@@ -13,9 +13,6 @@ replayer → router → replica → thread architecture, adapted from
 - **Percentiles computed at load time.** Tail-latency thresholds (P50–P99.99)
   are derived per `tenant+replica` group from the trace itself; no external
   percentile preprocessing step is required.
-- **Additive warm-up instead of FaaS cold start.** LB traces carry no
-  cold-start information, so a fresh thread optionally pays a configurable
-  `coldStartDuration` penalty on its first request (0 disables it).
 - **Timestamps** may be epoch seconds (float) or RFC3339/`YYYY-MM-DD HH:MM:SS`
   strings; they are normalized to start at zero.
 
@@ -25,7 +22,7 @@ replayer → router → replica → thread architecture, adapted from
 replayer   reads the chronological trace, advances the simulation clock
    └─> router          one replica per replicaID (shared by every tenant routed to it);
           │            owns the load balancer that picks a hedge copy's destination
-          └─> replica         bounded pool of threads, idletime-based scale-down
+          └─> replica         bounded pool of threads, created once and kept for the run
                  └─> thread       one concurrency slot; serves one request at a time
 ```
 
@@ -36,12 +33,26 @@ tenant, since one real backend serves whichever tenants get routed to it
 infrastructure — a "noisy neighbor" saturating a replica's thread pool slows
 down every tenant sharing it).
 
+**Modeling philosophy: a replica is an idealized downstream service.** This
+is a deliberate simplification, not an oversight — it isolates the
+load-balancing and hedging policy being studied from backend-provisioning
+effects that are orthogonal to it:
+
+- **Scales on demand, with no inherent limit.** A replica grows its thread
+  pool as concurrent load requires. `resourceProvisioner.maxThreads` is an
+  optional, explicit experimental knob for capping that growth (0 or
+  omitted = unlimited); the replica itself has no built-in ceiling.
+- **No cold start.** A fresh thread serves its first request exactly like
+  every later one — there is no warm-up/cold-start penalty. LB traces carry
+  no cold-start information to model faithfully, and the goal here is
+  downstream capacity, not FaaS-style provisioning latency.
+- **Never deprovisioned.** Once created, a thread is reused for the rest of
+  the run and only terminates when the whole simulation ends — there is no
+  idle-timeout/scale-down behavior (no `idletime` config dimension).
+
 A *thread* models one **concurrency slot** within a replica, not a machine: a
 replica serving N concurrent requests is represented by N threads. Thread
-counts in the outputs read as "busy slots over time". `resourceProvisioner.maxThreads`
-caps how many threads a replica may run at once (0 or omitted = unlimited,
-the original unbounded-pool behaviour); once at the cap, incoming requests
-queue for the next thread that frees up rather than spinning up a new one.
+counts in the outputs read as "busy slots over time".
 
 Techniques:
 
@@ -135,12 +146,31 @@ go run .
 ```
 
 Each section of `config.json` is one trace; the parameter grid
-(`tailLatencyProb` × `idletime` × `maxThreads` × `technique`) is swept per
-section. Per run, three CSVs are written to `outputPath`:
+(`tailLatencyProb` × `maxThreads` × `technique`) is swept per section.
+`outputPath` gets, once per section:
 
-- `*-invocations.csv` — per-request `duration`, `responseTime` and
-  `techniqueResponseTime`
+- `trace-index.csv` — `rowID`, `tenantID`, `replicaID`, `startTS`, `duration`
+  for every kept row, written **once**, not once per run. An original
+  invocation's row is immutable across every run over the same trace (see
+  "Modeling philosophy" above), so repeating these columns in every run's
+  output would just be identical bytes copied once per grid point.
+
+and per run:
+
+- `*-invocations.csv` — `rowID` (the join key back to `trace-index.csv`),
+  `tl_threshold`, `responseTime` and `techniqueResponseTime`: only the
+  columns that run's simulation actually produced.
 - `*-threads.csv` — per-thread `busyTime`, `upTime`, requests processed
 - `*-replicas.csv` — thread-count scaling timeline
 
 plus a `replayer-stats.csv` with wall-clock time per run.
+
+Splitting identity out of the per-run file matters at scale: on a 6.4M-row
+real trace, `*-invocations.csv` used to carry a full-length tenant UUID and
+replica IP on every row (a lot of repeated bytes for identifiers with only
+tens of distinct values) plus a `startTS` inflated to 15-17 digits by
+floating-point noise from the trace-normalizing subtraction in `ParseTrace`
+— none of it changing between runs. Moving that to `trace-index.csv` (written
+once, ~500MB regardless of how many runs sweep the trace) and keeping
+`startTS` at a fixed nanosecond precision there cut each run's
+`*-invocations.csv` from ~700MB to under 200MB.

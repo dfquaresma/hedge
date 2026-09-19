@@ -13,17 +13,14 @@ import (
 // replay, how to interpret its columns and the grid of simulation parameters
 // to sweep.
 type SimConfig struct {
-	TracePath         string
-	OutputPath        string
-	Columns           model.ColumnMapping
-	Techniques        []string
-	TailLatencyProbs  []string
-	ThresholdScopes   []string
-	Idletimes         []int
-	MaxThreads        []int // per replica; empty or containing 0 sweeps "unlimited"
-	ForwardLatency    float64
-	ColdStartDuration float64
-	MinGroupSize      int
+	TracePath        string
+	OutputPath       string
+	Columns          model.ColumnMapping
+	Techniques       []string
+	TailLatencyProbs []string
+	ThresholdScopes  []string
+	MaxThreads       []int // per replica; empty or containing 0 sweeps "unlimited"
+	MinGroupSize     int
 }
 
 // runSpec is one point of the parameter grid.
@@ -31,14 +28,12 @@ type runSpec struct {
 	prob       string
 	technique  string
 	scope      string
-	idletime   float64
 	maxThreads int
 }
 
 // expandRuns builds the parameter grid. The threshold scope only matters for
-// techniques that hedge, so baseline runs once per prob x idletime x
-// maxThreads instead of once per scope — its results are identical under any
-// scope.
+// techniques that hedge, so baseline runs once per prob x maxThreads instead
+// of once per scope — its results are identical under any scope.
 func expandRuns(sc SimConfig) []runSpec {
 	scopes := sc.ThresholdScopes
 	if len(scopes) == 0 {
@@ -50,16 +45,14 @@ func expandRuns(sc SimConfig) []runSpec {
 	}
 	specs := []runSpec{}
 	for _, p := range sc.TailLatencyProbs {
-		for _, i := range sc.Idletimes {
-			for _, mt := range maxThreads {
-				for _, t := range sc.Techniques {
-					if t == "baseline" {
-						specs = append(specs, runSpec{prob: p, technique: t, scope: model.ScopePerGroup, idletime: float64(i), maxThreads: mt})
-						continue
-					}
-					for _, s := range scopes {
-						specs = append(specs, runSpec{prob: p, technique: t, scope: s, idletime: float64(i), maxThreads: mt})
-					}
+		for _, mt := range maxThreads {
+			for _, t := range sc.Techniques {
+				if t == "baseline" {
+					specs = append(specs, runSpec{prob: p, technique: t, scope: model.ScopePerGroup, maxThreads: mt})
+					continue
+				}
+				for _, s := range scopes {
+					specs = append(specs, runSpec{prob: p, technique: t, scope: s, maxThreads: mt})
 				}
 			}
 		}
@@ -68,13 +61,26 @@ func expandRuns(sc SimConfig) []runSpec {
 }
 
 // Sim parses the trace once and replays it under every combination of
-// tailLatencyProb x idletime x maxThreads x technique, writing one result
-// set per run.
+// tailLatencyProb x maxThreads x technique, writing one result set per run.
 func Sim(sc SimConfig) {
 	start := time.Now()
 
 	trace, err := model.ParseTrace(sc.TracePath, sc.Columns, sc.MinGroupSize)
 	if err != nil {
+		panic(err)
+	}
+
+	// Written once per trace, not once per grid point: every run's
+	// *-invocations.csv joins back to this file by rowID instead of
+	// repeating identity columns that never change between runs.
+	indexWriter, err := io.NewStreamWriter(sc.OutputPath, "trace-index.csv")
+	if err != nil {
+		panic(err)
+	}
+	if err := trace.WriteIndex(indexWriter); err != nil {
+		panic(err)
+	}
+	if err := indexWriter.Close(); err != nil {
 		panic(err)
 	}
 
@@ -97,18 +103,11 @@ func Sim(sc SimConfig) {
 
 func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) []string {
 	cfg := model.Config{
-		ForwardLatency:    sc.ForwardLatency,
-		Idletime:          spec.idletime,
-		ColdStartDuration: sc.ColdStartDuration,
-		MaxThreads:        spec.maxThreads,
-		TailLatencyProb:   spec.prob,
-		Technique:         spec.technique,
+		MaxThreads:      spec.maxThreads,
+		TailLatencyProb: spec.prob,
+		Technique:       spec.technique,
 	}
 
-	idleDesc := "INF"
-	if spec.idletime >= 0 {
-		idleDesc = fmt.Sprintf("%.1f", spec.idletime)
-	}
 	maxThreadsDesc := "INF"
 	if spec.maxThreads > 0 {
 		maxThreadsDesc = fmt.Sprintf("%d", spec.maxThreads)
@@ -117,7 +116,7 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 	if spec.technique != "baseline" {
 		techDesc = spec.technique + "_" + spec.scope
 	}
-	simulationName := fmt.Sprintf("%s_idletime%s_maxthreads%s_tlprob%s", techDesc, idleDesc, maxThreadsDesc, spec.prob)
+	simulationName := fmt.Sprintf("%s_maxthreads%s_tlprob%s", techDesc, maxThreadsDesc, spec.prob)
 	fmt.Printf("[%d/%d] Running %s -> %s\n", count, total, simulationName, sc.OutputPath)
 
 	dataset := model.NewDataSet(trace, spec.prob, spec.scope)
@@ -127,8 +126,20 @@ func simulate(trace *model.Trace, sc SimConfig, spec runSpec, count, total int) 
 	replayer.Run()
 	fmt.Println("Simulation for " + simulationName + " is finished")
 
-	io.WriteOutput(sc.OutputPath, simulationName+"-invocations.csv", dataset.GetOutPut())
+	invocationsWriter, err := io.NewStreamWriter(sc.OutputPath, simulationName+"-invocations.csv")
+	if err != nil {
+		panic(err)
+	}
+	if err := dataset.WriteOutput(invocationsWriter); err != nil {
+		panic(err)
+	}
+	if err := invocationsWriter.Close(); err != nil {
+		panic(err)
+	}
 
+	// threads/replicas outputs are small (hundreds to thousands of rows, one
+	// row per thread or scaling event) — not the memory bottleneck the
+	// invocations file is, so they stay buffered via WriteOutput.
 	threadsOutput, scalingOutput := router.GetOutPut()
 	io.WriteOutput(sc.OutputPath, simulationName+"-threads.csv", threadsOutput)
 	io.WriteOutput(sc.OutputPath, simulationName+"-replicas.csv", scalingOutput)

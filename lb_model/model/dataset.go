@@ -285,22 +285,18 @@ func NewDataSet(t *Trace, tlProb, scope string) *Dataset {
 	}
 	invocs := make([]Invocation, len(t.rows))
 	tailLatencyCount := 0
-	for id, row := range t.rows {
+	for id := range t.rows {
+		row := &t.rows[id]
 		key := row.tenantID + row.replicaID
 		pcts := t.percentiles[key]
 		if scope == ScopeGlobal {
 			pcts = t.globalPercentiles
 		}
 		entry := traceEntry{
-			tenantID:    row.tenantID,
-			replicaID:   row.replicaID,
-			groupSize:   t.groupSizes[key],
-			startTS:     row.startTS,
-			duration:    row.duration,
-			endTS:       row.startTS + row.duration,
+			row:         row,
 			tailLatency: newTailLatency(pcts, tlProb),
 		}
-		if entry.duration > entry.tailLatency.getTailLatencyThreshold() {
+		if row.duration > entry.tailLatency.getTailLatencyThreshold() {
 			tailLatencyCount++
 		}
 		invocs[id] = *newInvocation(strconv.Itoa(id), entry)
@@ -341,16 +337,62 @@ func (d *Dataset) GetSize() int {
 	return len(d.invocations)
 }
 
-func (d *Dataset) GetOutPut() [][]string {
-	res := [][]string{}
-	header := []string{
-		"tenantID", "replicaID", "invocationID",
-		"endTS", "startTS", "tl_threshold",
-		"duration", "responseTime", "techniqueResponseTime",
+// RowWriter is the minimal sink WriteOutput needs — satisfied by
+// common/io.StreamWriter — so this package writes rows as it produces them
+// instead of buffering all of them (millions, for a full trace) into a
+// [][]string first.
+type RowWriter interface {
+	Write(record []string) error
+}
+
+// WriteOutput streams this run's per-invocation results. rowID is the join
+// key back to Trace.WriteIndex's output, which carries the (run-independent)
+// tenantID, replicaID, startTS, duration and endTS instead — repeating those
+// in every run's file would just be the same bytes copied once per grid
+// point, since an original invocation's row is immutable across runs.
+func (d *Dataset) WriteOutput(w RowWriter) error {
+	header := []string{"rowID", "tl_threshold", "responseTime", "techniqueResponseTime"}
+	if err := w.Write(header); err != nil {
+		return err
 	}
-	res = append(res, header)
-	for _, inv := range d.invocations {
-		res = append(res, inv.getOutPut())
+	for i := range d.invocations {
+		if err := w.Write(d.invocations[i].getOutPut()); err != nil {
+			return err
+		}
 	}
-	return res
+	return nil
+}
+
+// WriteIndex streams the trace's immutable identity columns — rowID (the
+// join key used by every run's *-invocations.csv), tenantID, replicaID,
+// startTS and duration — once per trace, regardless of how many grid points
+// replay it.
+//
+// startTS is formatted at fixed nanosecond precision rather than the
+// shortest round-trip representation strconv normally picks: after
+// ParseTrace's `rows[i].startTS -= base` normalization, subtracting two
+// close-in-magnitude epoch-second floats leaves a binary remainder whose
+// exact shortest decimal form can run to 15-17 digits even though the
+// trace's real timestamp precision is nanoseconds at most — the extra digits
+// are float64 noise, not information, so keeping them would just bloat the
+// file for no benefit.
+func (t *Trace) WriteIndex(w RowWriter) error {
+	header := []string{"rowID", "tenantID", "replicaID", "startTS", "duration"}
+	if err := w.Write(header); err != nil {
+		return err
+	}
+	for id := range t.rows {
+		row := &t.rows[id]
+		record := []string{
+			strconv.Itoa(id),
+			row.tenantID,
+			row.replicaID,
+			strconv.FormatFloat(row.startTS, 'f', 9, 64),
+			strconv.FormatFloat(row.duration, 'f', -1, 64),
+		}
+		if err := w.Write(record); err != nil {
+			return err
+		}
+	}
+	return nil
 }

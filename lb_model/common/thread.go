@@ -1,7 +1,6 @@
 package common
 
 import (
-	"math"
 	"strconv"
 
 	"github.com/agoussia/godes"
@@ -23,7 +22,6 @@ type thread struct {
 	arrivalQueue   *godes.FIFOQueue
 	parent         *replica
 	threadID       string
-	cfg            model.Config
 	startTS        float64
 	shutdownTS     float64
 	lastWorkTS     float64
@@ -32,7 +30,7 @@ type thread struct {
 	reqsCount      int
 }
 
-func newThread(parent *replica, threadID string, cfg model.Config) *thread {
+func newThread(parent *replica, threadID string) *thread {
 	return &thread{
 		Runner:         &godes.Runner{},
 		arrivalCond:    godes.NewBooleanControl(),
@@ -41,7 +39,6 @@ func newThread(parent *replica, threadID string, cfg model.Config) *thread {
 		arrivalQueue:   godes.NewFIFOQueue(threadID),
 		parent:         parent,
 		threadID:       threadID,
-		cfg:            cfg,
 	}
 }
 
@@ -58,20 +55,6 @@ func (t *thread) Run() {
 		t.arrivalCond.Wait(true)
 		if t.arrivalQueue.Len() > 0 {
 			i := t.arrivalQueue.Get().(*model.Invocation)
-			// A fresh slot pays a warm-up penalty on its first request
-			// (cache warm-up, connection setup, JIT, ...). Unlike the FaaS
-			// cold-start model, the penalty is additive and configured
-			// globally, since LB traces carry no per-request cold info.
-			if t.reqsCount == 0 && t.cfg.ColdStartDuration > 0 {
-				i.SetDuration(i.GetDuration() + t.cfg.ColdStartDuration)
-			}
-
-			forwardLatency := t.cfg.ForwardLatency
-			if forwardLatency != 0 {
-				godes.Advance(forwardLatency)
-				t.busyTime += forwardLatency
-				i.UpdateResponse(forwardLatency)
-			}
 
 			delay := t.parent.getTechniqueDelay(i)
 			dur := i.GetDuration()
@@ -126,9 +109,6 @@ func (t *thread) Run() {
 
 func (t *thread) setUptimeStats() {
 	t.shutdownTS = godes.GetSystemTime()
-	if t.cfg.Idletime >= 0 {
-		t.shutdownTS = math.Min(t.shutdownTS, t.lastWorkTS+t.cfg.Idletime)
-	}
 	t.parent.notifyTermination(t.shutdownTS)
 	t.upTime = t.shutdownTS - t.startTS
 }
