@@ -13,9 +13,6 @@ replayer → router → replica → thread architecture, adapted from
 - **Percentiles computed at load time.** Tail-latency thresholds (P50–P99.99)
   are derived per `tenant+replica` group from the trace itself; no external
   percentile preprocessing step is required.
-- **Additive warm-up instead of FaaS cold start.** LB traces carry no
-  cold-start information, so a fresh thread optionally pays a configurable
-  `coldStartDuration` penalty on its first request (0 disables it).
 - **Timestamps** may be epoch seconds (float) or RFC3339/`YYYY-MM-DD HH:MM:SS`
   strings; they are normalized to start at zero.
 
@@ -36,18 +33,26 @@ tenant, since one real backend serves whichever tenants get routed to it
 infrastructure — a "noisy neighbor" saturating a replica's thread pool slows
 down every tenant sharing it).
 
+**Modeling philosophy: a replica is an idealized downstream service.** This
+is a deliberate simplification, not an oversight — it isolates the
+load-balancing and hedging policy being studied from backend-provisioning
+effects that are orthogonal to it:
+
+- **Scales on demand, with no inherent limit.** A replica grows its thread
+  pool as concurrent load requires. `resourceProvisioner.maxThreads` is an
+  optional, explicit experimental knob for capping that growth (0 or
+  omitted = unlimited); the replica itself has no built-in ceiling.
+- **No cold start.** A fresh thread serves its first request exactly like
+  every later one — there is no warm-up/cold-start penalty. LB traces carry
+  no cold-start information to model faithfully, and the goal here is
+  downstream capacity, not FaaS-style provisioning latency.
+- **Never deprovisioned.** Once created, a thread is reused for the rest of
+  the run and only terminates when the whole simulation ends — there is no
+  idle-timeout/scale-down behavior (no `idletime` config dimension).
+
 A *thread* models one **concurrency slot** within a replica, not a machine: a
 replica serving N concurrent requests is represented by N threads. Thread
-counts in the outputs read as "busy slots over time". `resourceProvisioner.maxThreads`
-caps how many threads a replica may run at once (0 or omitted = unlimited,
-the original unbounded-pool behaviour); once at the cap, incoming requests
-queue for the next thread that frees up rather than spinning up a new one.
-Threads are never scaled back down mid-run — once created, a thread is
-reused for the rest of the run and only terminates when the whole
-simulation ends. There is no idle-timeout/scale-down knob (no `idletime`
-config): it added sweep dimensions and thread-churn overhead without
-changing what a run measures, since threads are stateless slots, not a
-cost this model prices.
+counts in the outputs read as "busy slots over time".
 
 Techniques:
 

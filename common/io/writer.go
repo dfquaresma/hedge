@@ -29,6 +29,41 @@ func WriteOutput(outputPath, simulationName string, data [][]string) {
 	}
 }
 
+// StreamWriter writes many records to one CSV file, opening it once and
+// flushing on Close. Use it instead of WriteOutput for large outputs (millions
+// of rows) that would otherwise need to be buffered entirely in memory as a
+// [][]string before a single write.
+type StreamWriter struct {
+	file   *os.File
+	writer *csv.Writer
+}
+
+func NewStreamWriter(outputPath, simulationName string) (*StreamWriter, error) {
+	if err := os.MkdirAll(outputPath, os.ModePerm); err != nil {
+		return nil, err
+	}
+	f, err := os.Create(outputPath + simulationName)
+	if err != nil {
+		return nil, err
+	}
+	return &StreamWriter{file: f, writer: csv.NewWriter(f)}, nil
+}
+
+func (w *StreamWriter) Write(record []string) error {
+	return w.writer.Write(record)
+}
+
+// Close flushes buffered writes and closes the underlying file. It must be
+// called for the CSV writer's internal buffer to actually reach disk.
+func (w *StreamWriter) Close() error {
+	w.writer.Flush()
+	if err := w.writer.Error(); err != nil {
+		w.file.Close()
+		return err
+	}
+	return w.file.Close()
+}
+
 func WriteOutputHeaderRow(outputPath, simulationName string, rows []string) {
 	_ = os.Remove(outputPath + simulationName)
 	WriteOutputByRow(outputPath, simulationName, rows)

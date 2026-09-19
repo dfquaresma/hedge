@@ -285,22 +285,18 @@ func NewDataSet(t *Trace, tlProb, scope string) *Dataset {
 	}
 	invocs := make([]Invocation, len(t.rows))
 	tailLatencyCount := 0
-	for id, row := range t.rows {
+	for id := range t.rows {
+		row := &t.rows[id]
 		key := row.tenantID + row.replicaID
 		pcts := t.percentiles[key]
 		if scope == ScopeGlobal {
 			pcts = t.globalPercentiles
 		}
 		entry := traceEntry{
-			tenantID:    row.tenantID,
-			replicaID:   row.replicaID,
-			groupSize:   t.groupSizes[key],
-			startTS:     row.startTS,
-			duration:    row.duration,
-			endTS:       row.startTS + row.duration,
+			row:         row,
 			tailLatency: newTailLatency(pcts, tlProb),
 		}
-		if entry.duration > entry.tailLatency.getTailLatencyThreshold() {
+		if row.duration > entry.tailLatency.getTailLatencyThreshold() {
 			tailLatencyCount++
 		}
 		invocs[id] = *newInvocation(strconv.Itoa(id), entry)
@@ -341,16 +337,27 @@ func (d *Dataset) GetSize() int {
 	return len(d.invocations)
 }
 
-func (d *Dataset) GetOutPut() [][]string {
-	res := [][]string{}
+// RowWriter is the minimal sink WriteOutput needs — satisfied by
+// common/io.StreamWriter — so this package writes rows as it produces them
+// instead of buffering all of them (millions, for a full trace) into a
+// [][]string first.
+type RowWriter interface {
+	Write(record []string) error
+}
+
+func (d *Dataset) WriteOutput(w RowWriter) error {
 	header := []string{
 		"tenantID", "replicaID", "invocationID",
 		"endTS", "startTS", "tl_threshold",
 		"duration", "responseTime", "techniqueResponseTime",
 	}
-	res = append(res, header)
-	for _, inv := range d.invocations {
-		res = append(res, inv.getOutPut())
+	if err := w.Write(header); err != nil {
+		return err
 	}
-	return res
+	for i := range d.invocations {
+		if err := w.Write(d.invocations[i].getOutPut()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
