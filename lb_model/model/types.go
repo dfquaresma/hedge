@@ -5,6 +5,7 @@ type Config struct {
 	ForwardLatency    float64
 	Idletime          float64
 	ColdStartDuration float64
+	MaxThreads        int // 0 = unlimited concurrent threads per replica
 	TailLatencyProb   string
 	Technique         string
 }
@@ -14,15 +15,15 @@ type Config struct {
 // fields (status codes, byte counts, raw request lines, ...) can be
 // replayed without preprocessing.
 type ColumnMapping struct {
-	App            string
-	Func           string
+	Tenant         string
+	Replica        string
 	StartTimestamp string
 	Duration       string
 }
 
 type traceEntry struct {
-	appID     string
-	funcID    string
+	tenantID  string
+	replicaID string
 	groupSize int64
 	startTS   float64
 	duration  float64

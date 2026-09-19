@@ -21,8 +21,8 @@ func newInvocation(id string, te traceEntry) *Invocation {
 func CopyInvocation(i *Invocation) *Invocation {
 	return &Invocation{
 		te: traceEntry{
-			appID:       i.te.appID,
-			funcID:      i.te.funcID,
+			tenantID:    i.te.tenantID,
+			replicaID:   i.te.replicaID,
 			groupSize:   i.te.groupSize,
 			startTS:     i.te.startTS,
 			duration:    i.te.duration,
@@ -65,16 +65,25 @@ func (i *Invocation) SetDuration(nd float64) {
 	i.te.duration = nd
 }
 
+// SetReplicaID re-targets a hedge copy to the replica that will actually
+// process it — set once the load balancer has picked an alternate replica,
+// so output/debugging reflects where the copy really ran. The latency it
+// samples still comes from the original tenant+replica's own distribution
+// (see technique.go), independent of this.
+func (i *Invocation) SetReplicaID(id string) {
+	i.te.replicaID = id
+}
+
 func (i *Invocation) GetTailLatencyThreshold() float64 {
 	return i.te.tailLatency.getTailLatencyThreshold()
 }
 
-func (i *Invocation) GetAppID() string {
-	return i.te.appID
+func (i *Invocation) GetTenantID() string {
+	return i.te.tenantID
 }
 
-func (i *Invocation) GetFuncID() string {
-	return i.te.funcID
+func (i *Invocation) GetReplicaID() string {
+	return i.te.replicaID
 }
 
 func (i *Invocation) GetDuration() float64 {
@@ -91,8 +100,8 @@ func (i *Invocation) GetSrcInvoc() *Invocation {
 
 func (i *Invocation) getOutPut() []string {
 	return []string{
-		i.te.appID,
-		i.te.funcID,
+		i.te.tenantID,
+		i.te.replicaID,
 		i.im.invocationId,
 
 		strconv.FormatFloat(i.te.endTS, 'f', -1, 64),

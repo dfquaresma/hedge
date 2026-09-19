@@ -13,7 +13,7 @@ import (
 // Threshold scopes: which latency distribution defines an invocation's
 // tail-latency threshold (and therefore the hedging delay).
 const (
-	// ScopePerGroup uses the invocation's own app+func group percentiles —
+	// ScopePerGroup uses the invocation's own tenant+replica group percentiles —
 	// a hedging policy aware of trace heterogeneity.
 	ScopePerGroup = "per_group"
 	// ScopeGlobal uses whole-trace percentiles — a policy blind to
@@ -30,13 +30,19 @@ type Trace struct {
 	globalPercentiles percentile
 	groupSizes        map[string]int64
 	latencies         map[string][]float64
+	// ReplicaIDs lists every distinct replica seen in the trace, sorted for
+	// a deterministic order. It lets a simulation run create every replica
+	// upfront (see common.NewRouter) so a load-balancer policy has the full,
+	// stable set to choose from from the very first invocation, rather than
+	// discovering replicas lazily as the replay encounters them.
+	ReplicaIDs []string
 }
 
 type parsedRow struct {
-	appID    string
-	funcID   string
-	startTS  float64
-	duration float64
+	tenantID  string
+	replicaID string
+	startTS   float64
+	duration  float64
 }
 
 type Dataset struct {
@@ -59,11 +65,18 @@ var timestampLayouts = []string{
 // four required fields can be replayed regardless of column order or extra
 // fields; only those four fields are ever held in memory per row, so extra
 // columns cost nothing beyond the read itself. Rows with a non-positive or
-// unparsable duration and rows whose app+func group has fewer than
+// unparsable duration and rows whose tenant+replica group has fewer than
 // minGroupSize samples are dropped: percentile estimates for tiny groups are
 // meaningless as hedging thresholds. Timestamps are normalized to start at
 // zero and rows are sorted by start time, as the replayer expects a
 // chronological trace.
+//
+// Percentiles (and therefore hedging thresholds and hedge-copy resampling)
+// are always computed per tenant+replica group — this is a statistical
+// calibration of that tenant's own latency profile against that replica, and
+// is independent of how replicas are addressed at runtime (see
+// common/replica.go, which looks up the shared replica object by replicaID
+// alone, since a physical replica serves every tenant routed to it).
 func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace, error) {
 	f, err := os.Open(tracePath)
 	if err != nil {
@@ -85,6 +98,7 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 
 	rows := make([]parsedRow, 0, 1<<20)
 	durationsByGroup := make(map[string][]float64)
+	replicaIDSet := make(map[string]struct{})
 	total := 0
 	skipped := 0
 	for {
@@ -102,12 +116,19 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 			continue
 		}
 		rows = append(rows, row)
-		key := row.appID + row.funcID
+		key := row.tenantID + row.replicaID
 		durationsByGroup[key] = append(durationsByGroup[key], row.duration)
+		replicaIDSet[row.replicaID] = struct{}{}
 	}
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("no valid rows in trace (%d skipped)", skipped)
 	}
+
+	replicaIDs := make([]string, 0, len(replicaIDSet))
+	for id := range replicaIDSet {
+		replicaIDs = append(replicaIDs, id)
+	}
+	sort.Strings(replicaIDs)
 
 	percentiles := make(map[string]percentile)
 	groupSizes := make(map[string]int64)
@@ -130,13 +151,13 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 
 	kept := rows[:0]
 	for _, row := range rows {
-		if _, ok := groupSizes[row.appID+row.funcID]; ok {
+		if _, ok := groupSizes[row.tenantID+row.replicaID]; ok {
 			kept = append(kept, row)
 		}
 	}
 	rows = kept
 	if len(rows) == 0 {
-		return nil, fmt.Errorf("every app+func group has fewer than %d samples", minGroupSize)
+		return nil, fmt.Errorf("every tenant+replica group has fewer than %d samples", minGroupSize)
 	}
 
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].startTS < rows[j].startTS })
@@ -162,7 +183,7 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 	}
 
 	fmt.Printf(
-		"Trace parsed: %d invocations, %d app+func groups, %d rows dropped (invalid or below minGroupSize=%d)\n",
+		"Trace parsed: %d invocations, %d tenant+replica groups, %d rows dropped (invalid or below minGroupSize=%d)\n",
 		len(rows), len(groupSizes), total-len(rows), minGroupSize,
 	)
 
@@ -172,13 +193,14 @@ func ParseTrace(tracePath string, cols ColumnMapping, minGroupSize int) (*Trace,
 		globalPercentiles: globalPercentiles,
 		groupSizes:        groupSizes,
 		latencies:         durationsByGroup,
+		ReplicaIDs:        replicaIDs,
 	}, nil
 }
 
 func resolveColumns(header []string, cols ColumnMapping) (map[string]int, error) {
 	wanted := map[string]string{
-		"app":            cols.App,
-		"func":           cols.Func,
+		"tenant":         cols.Tenant,
+		"replica":        cols.Replica,
 		"startTimestamp": cols.StartTimestamp,
 		"duration":       cols.Duration,
 	}
@@ -208,9 +230,9 @@ func parseRow(record []string, colIdx map[string]int) (parsedRow, bool) {
 			return parsedRow{}, false
 		}
 	}
-	appID := record[colIdx["app"]]
-	funcID := record[colIdx["func"]]
-	if appID == "" || funcID == "" {
+	tenantID := record[colIdx["tenant"]]
+	replicaID := record[colIdx["replica"]]
+	if tenantID == "" || replicaID == "" {
 		return parsedRow{}, false
 	}
 	duration, err := strconv.ParseFloat(record[colIdx["duration"]], 64)
@@ -221,7 +243,7 @@ func parseRow(record []string, colIdx map[string]int) (parsedRow, bool) {
 	if err != nil {
 		return parsedRow{}, false
 	}
-	return parsedRow{appID: appID, funcID: funcID, startTS: startTS, duration: duration}, true
+	return parsedRow{tenantID: tenantID, replicaID: replicaID, startTS: startTS, duration: duration}, true
 }
 
 func parseTimestamp(s string) (float64, error) {
@@ -264,14 +286,14 @@ func NewDataSet(t *Trace, tlProb, scope string) *Dataset {
 	invocs := make([]Invocation, len(t.rows))
 	tailLatencyCount := 0
 	for id, row := range t.rows {
-		key := row.appID + row.funcID
+		key := row.tenantID + row.replicaID
 		pcts := t.percentiles[key]
 		if scope == ScopeGlobal {
 			pcts = t.globalPercentiles
 		}
 		entry := traceEntry{
-			appID:       row.appID,
-			funcID:      row.funcID,
+			tenantID:    row.tenantID,
+			replicaID:   row.replicaID,
 			groupSize:   t.groupSizes[key],
 			startTS:     row.startTS,
 			duration:    row.duration,
@@ -322,7 +344,7 @@ func (d *Dataset) GetSize() int {
 func (d *Dataset) GetOutPut() [][]string {
 	res := [][]string{}
 	header := []string{
-		"appID", "funcID", "invocationID",
+		"tenantID", "replicaID", "invocationID",
 		"endTS", "startTS", "tl_threshold",
 		"duration", "responseTime", "techniqueResponseTime",
 	}

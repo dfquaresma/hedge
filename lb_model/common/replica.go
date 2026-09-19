@@ -1,158 +1,125 @@
 package common
 
 import (
-	"math"
 	"strconv"
 
 	"github.com/agoussia/godes"
 	"github.com/dfquaresma/hedge/lb_model/model"
 )
 
-// replica models one backend concurrency slot: it serves a single request at
-// a time. A backend node that handles N concurrent requests is represented
-// by N replicas, so replica counts read as "busy slots", not machines.
+// replica represents one backend instance identified by the trace's replica
+// column (e.g. target_ip) — one object per replicaID, shared by every tenant
+// routed to it (see router.go, which looks it up by replicaID alone). It
+// owns a pool of threads (concurrency slots) bounded by cfg.MaxThreads and
+// the hedging technique configured for the run.
+//
+// forward is fire-and-forget: it never blocks the caller (the replayer's
+// single dispatch loop), even when every thread is busy and the pool is at
+// its cap — the invocation is queued in pending and handed to a thread as
+// soon as one frees up, in setAvailable.
 type replica struct {
 	*godes.Runner
-	arrivalCond    *godes.BooleanControl
-	terminatedCond *godes.BooleanControl
-	isBusy         *godes.BooleanControl
-	arrivalQueue   *godes.FIFOQueue
-	provisioner    *provisioner
-	replicaID      string
-	appID          string
-	funcID         string
-	cfg            model.Config
-	startTS        float64
-	shutdownTS     float64
-	lastWorkTS     float64
-	busyTime       float64
-	upTime         float64
-	reqsCount      int
+	availableThreads *godes.LIFOQueue
+	pending          []*model.Invocation
+	replicaID        string
+	cfg              model.Config
+	threads          []*thread
+	technique        *technique
+	router           *router
+	threadSeq        int
+	activeThreads    int
 }
 
-func newReplica(p *provisioner, rid, aid, fid string, cfg model.Config) *replica {
-	return &replica{
-		Runner:         &godes.Runner{},
-		arrivalCond:    godes.NewBooleanControl(),
-		terminatedCond: godes.NewBooleanControl(),
-		isBusy:         godes.NewBooleanControl(),
-		arrivalQueue:   godes.NewFIFOQueue(rid),
-		provisioner:    p,
-		replicaID:      rid,
-		appID:          aid,
-		funcID:         fid,
-		cfg:            cfg,
+func newReplica(replicaID string, cfg model.Config, r *router) *replica {
+	rep := &replica{
+		Runner:    &godes.Runner{},
+		replicaID: replicaID,
+		cfg:       cfg,
+		router:    r,
 	}
+	rep.technique = newTechnique(rep, cfg.Technique, r)
+	rep.availableThreads = godes.NewLIFOQueue(replicaID)
+	return rep
 }
 
-func (r *replica) process(i *model.Invocation) {
-	r.arrivalQueue.Place(i)
-	r.isBusy.Set(true)
-	r.arrivalCond.Set(true)
+func (r *replica) forward(i *model.Invocation) {
+	if t := r.getAvailableThread(); t != nil {
+		t.process(i)
+		return
+	}
+	r.pending = append(r.pending, i)
 }
 
-func (r *replica) Run() {
-	r.startTS = godes.GetSystemTime()
-	r.provisioner.notifyReadyness(r.funcID, godes.GetSystemTime())
-	for {
-		r.arrivalCond.Wait(true)
-		if r.arrivalQueue.Len() > 0 {
-			i := r.arrivalQueue.Get().(*model.Invocation)
-			// A fresh slot pays a warm-up penalty on its first request
-			// (cache warm-up, connection setup, JIT, ...). Unlike the FaaS
-			// cold-start model, the penalty is additive and configured
-			// globally, since LB traces carry no per-request cold info.
-			if r.reqsCount == 0 && r.cfg.ColdStartDuration > 0 {
-				i.SetDuration(i.GetDuration() + r.cfg.ColdStartDuration)
-			}
+func (r *replica) response(i *model.Invocation) {
+	r.technique.processResponse(i)
+}
 
-			forwardLatency := r.cfg.ForwardLatency
-			if forwardLatency != 0 {
-				godes.Advance(forwardLatency)
-				r.busyTime += forwardLatency
-				i.UpdateResponse(forwardLatency)
-			}
+// setAvailable is called by a thread that just finished its current request.
+// If requests are waiting because the pool was at its cap, the thread picks
+// up the oldest one immediately instead of going idle.
+func (r *replica) setAvailable(t *thread) {
+	if len(r.pending) > 0 {
+		next := r.pending[0]
+		r.pending = r.pending[1:]
+		t.process(next)
+		return
+	}
+	r.availableThreads.Place(t)
+}
 
-			delay := r.provisioner.getTechniqueDelay(i)
-			dur := i.GetDuration()
-			if dur-delay >= 0 {
-				if delay != 0 {
-					godes.Advance(delay)
-					r.busyTime += delay
-					i.UpdateResponse(delay)
-				}
-				dur = i.GetDuration() - delay // dur is now the surplus latency after the technique delay
-
-				shouldCancel, timeToCancel := r.provisioner.triggerTechnique(i)
-				if shouldCancel {
-					godes.Advance(timeToCancel)
-					r.busyTime += timeToCancel
-					r.lastWorkTS = godes.GetSystemTime()
-
-					if r.terminatedCond.GetState() {
-						r.setUptimeStats()
-						break
-					}
-
-					r.isBusy.Set(false)
-					r.provisioner.setAvailable(r)
-					continue
-				}
-			}
-
-			godes.Advance(dur)
-			r.busyTime += dur
-
-			i.UpdateResponse(dur)
-
-			r.lastWorkTS = godes.GetSystemTime()
-			i.SetProcessedTs(r.lastWorkTS)
-
-			r.provisioner.response(i)
-			r.reqsCount += 1
+// getAvailableThread returns an idle thread, spins up a new one if the pool
+// hasn't reached cfg.MaxThreads, or returns nil if it's at capacity — the
+// caller (forward) then queues the invocation in pending. MaxThreads <= 0
+// means unlimited, preserving the original unbounded-pool behaviour.
+func (r *replica) getAvailableThread() *thread {
+	for r.availableThreads.Len() > 0 {
+		t := r.availableThreads.Get().(*thread)
+		if t.terminatedCond.GetState() {
+			continue
 		}
-
-		if r.arrivalQueue.Len() == 0 {
-			if r.terminatedCond.GetState() {
-				r.setUptimeStats()
-				break
-			}
-			r.arrivalCond.Set(false)
-			r.isBusy.Set(false)
-			r.provisioner.setAvailable(r)
+		if r.cfg.Idletime < 0 || r.cfg.Idletime > godes.GetSystemTime()-t.lastWorkTS {
+			return t
 		}
+		t.terminate()
 	}
+	if r.cfg.MaxThreads > 0 && r.activeThreads >= r.cfg.MaxThreads {
+		return nil
+	}
+	r.activeThreads++
+	r.threadSeq++
+	t := newThread(r, r.replicaID+"-"+strconv.Itoa(r.threadSeq), r.cfg)
+	godes.AddRunner(t)
+	r.threads = append(r.threads, t)
+	return t
 }
 
-func (r *replica) setUptimeStats() {
-	r.shutdownTS = godes.GetSystemTime()
-	if r.cfg.Idletime >= 0 {
-		r.shutdownTS = math.Min(r.shutdownTS, r.lastWorkTS+r.cfg.Idletime)
-	}
-	r.provisioner.notifyTermination(r.funcID, r.shutdownTS)
-	r.upTime = r.shutdownTS - r.startTS
+func (r *replica) notifyReadyness(timestamp float64) {
+	r.router.registerReplicaScaling(r.replicaID, 1, timestamp)
+}
+
+func (r *replica) notifyTermination(timestamp float64) {
+	r.activeThreads--
+	r.router.registerReplicaScaling(r.replicaID, -1, timestamp)
+}
+
+func (r *replica) triggerTechnique(i *model.Invocation) (bool, float64) {
+	return r.technique.trigger(i)
+}
+
+func (r *replica) getTechniqueDelay(i *model.Invocation) float64 {
+	return r.technique.getTechniqueDelay(i)
 }
 
 func (r *replica) terminate() {
-	r.terminatedCond.Set(true)
-	r.arrivalCond.Set(true)
-}
-
-func (r *replica) getRequestCount() int {
-	return r.reqsCount
-}
-
-func (r *replica) getOutPut() []string {
-	return []string{
-		r.replicaID,
-		r.provisioner.rpID,
-		r.appID,
-		r.funcID,
-		strconv.FormatFloat(r.busyTime, 'f', -1, 64),
-		strconv.FormatFloat(r.upTime, 'f', -1, 64),
-		strconv.Itoa(r.reqsCount),
-		strconv.FormatFloat(r.lastWorkTS, 'f', -1, 64),
-		strconv.FormatFloat(r.startTS, 'f', -1, 64),
-		strconv.FormatFloat(r.shutdownTS, 'f', -1, 64),
+	for _, t := range r.threads {
+		t.terminate()
 	}
+}
+
+func (r *replica) getOutPut() [][]string {
+	res := [][]string{}
+	for _, t := range r.threads {
+		res = append(res, t.getOutPut())
+	}
+	return res
 }
